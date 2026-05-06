@@ -65,6 +65,38 @@ function broadcastState(roomCode) {
   if (room) io.to(roomCode).emit('room:state', getRoomState(room));
 }
 
+// Build the payload sent to display clients.
+// Resolves the imageData for the active submission from room.answers.
+function buildDisplayPayload(room) {
+  const payload = {
+    mode: room.displayState.mode,
+    latestCorrect: room.displayState.latestCorrect,
+    submission: null,
+  };
+  if (room.displayState.mode === 'submission' && room.displayState.submission) {
+    const sub = room.displayState.submission;
+    const answer = room.answers.find((a) => a.participantId === sub.participantId);
+    payload.submission = {
+      participantId: sub.participantId,
+      name: sub.name,
+      type: sub.type,
+      imageData: answer?.imageData || null,
+    };
+  }
+  return payload;
+}
+
+// Deliver display state to all connected display sockets and the host.
+function broadcastDisplayState(roomCode) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  const payload = buildDisplayPayload(room);
+  // Prune stale socket IDs then fan out to live display sockets
+  room.displaySocketIds = room.displaySocketIds.filter((id) => io.sockets.sockets.has(id));
+  room.displaySocketIds.forEach((id) => io.sockets.sockets.get(id)?.emit('display:state', payload));
+  io.sockets.sockets.get(room.hostSocketId)?.emit('display:state', payload);
+}
+
 // ── Socket event handlers ─────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
@@ -81,10 +113,16 @@ io.on('connection', (socket) => {
       buzzerOpen: false,
       buzzerOpenTime: null,
       roundNumber: 1,
-      mode: 'buzzer', // 'buzzer' | 'blackboard'
+      mode: 'buzzer', // 'buzzer' | 'blackboard' | 'tshirt'
       participants: {},
       buzzes: [],
-      answers: []
+      answers: [],
+      displayState: {
+        mode: 'join', // 'join' | 'question' | 'top3' | 'leaderboard' | 'correct' | 'submission'
+        latestCorrect: null, // { name, points, totalScore }
+        submission: null,    // { participantId, name, type: 'blackboard'|'tshirt' }
+      },
+      displaySocketIds: [], // sockets connected as display observers
     };
 
     socket.join(roomCode);
@@ -102,6 +140,50 @@ io.on('connection', (socket) => {
       return;
     }
     socket.emit('room:state', getRoomState(room));
+  });
+
+  // ── DISPLAY: read-only observer joins a room ─────────────────────────────
+
+  socket.on('display:join', ({ roomCode }) => {
+    const room = rooms[roomCode];
+    if (!room) {
+      socket.emit('room:error', { message: 'Room not found.' });
+      return;
+    }
+    socket.join(roomCode);
+    socket.data.roomCode = roomCode;
+    socket.data.isDisplay = true;
+    if (!room.displaySocketIds.includes(socket.id)) {
+      room.displaySocketIds.push(socket.id);
+    }
+    socket.emit('room:state', getRoomState(room));
+    socket.emit('display:state', buildDisplayPayload(room));
+    console.log(`[display]  joined ${roomCode} (${socket.id})`);
+  });
+
+  // ── HOST: set what the public display shows ───────────────────────────────
+
+  socket.on('display:set', ({ roomCode, mode, participantId, type }) => {
+    const room = rooms[roomCode];
+    if (!room || room.hostSocketId !== socket.id) return;
+    const validModes = ['join', 'question', 'top3', 'leaderboard', 'correct', 'submission'];
+    if (!validModes.includes(mode)) return;
+
+    room.displayState.mode = mode;
+
+    if (mode === 'submission' && participantId) {
+      const answer = room.answers.find((a) => a.participantId === participantId);
+      if (answer) {
+        room.displayState.submission = {
+          participantId,
+          name: answer.name,
+          type: type || 'blackboard',
+        };
+      }
+    }
+
+    broadcastDisplayState(roomCode);
+    console.log(`[display]  ${roomCode} set to ${mode}${participantId ? ` (${participantId})` : ''}`);
   });
 
   // ── PARTICIPANT: join a room ──────────────────────────────────────────────
@@ -207,6 +289,7 @@ io.on('connection', (socket) => {
     if (!room || room.hostSocketId !== socket.id) return;
 
     room.buzzerOpen = false;
+    room.buzzerCloseTime = Date.now(); // grace window for in-flight auto-submits
     io.to(roomCode).emit('buzzer:closed', {});
     broadcastState(roomCode);
   });
@@ -277,6 +360,8 @@ io.on('connection', (socket) => {
       // Clamp points to a sane range to prevent accidents
       const pts = Math.max(1, Math.min(1000, parseInt(pointsPerCorrect, 10) || 10));
       participant.score += pts;
+      room.displayState.latestCorrect = { name: participant.name, points: pts, totalScore: participant.score };
+      broadcastDisplayState(roomCode);
     }
 
     broadcastState(roomCode);
@@ -286,7 +371,9 @@ io.on('connection', (socket) => {
 
   socket.on('answer:submit', ({ roomCode, participantId, imageData }) => {
     const room = rooms[roomCode];
-    if (!room || !['blackboard', 'tshirt'].includes(room.mode) || !room.buzzerOpen) return;
+    // Accept while open, or within 3 s of closing (auto-submit triggered by buzzer:closed)
+    const inGrace = room?.buzzerCloseTime && (Date.now() - room.buzzerCloseTime) < 3000;
+    if (!room || !['blackboard', 'tshirt'].includes(room.mode) || (!room.buzzerOpen && !inGrace)) return;
 
     const participant = room.participants[participantId];
     if (!participant) return;
@@ -330,6 +417,8 @@ io.on('connection', (socket) => {
     if (validResult === 'correct') {
       const pts = Math.max(1, Math.min(1000, parseInt(pointsPerCorrect, 10) || 10));
       participant.score += pts;
+      room.displayState.latestCorrect = { name: participant.name, points: pts, totalScore: participant.score };
+      broadcastDisplayState(roomCode);
     }
 
     broadcastState(roomCode);
@@ -359,9 +448,17 @@ io.on('connection', (socket) => {
 
     room.buzzerOpen = false;
     room.buzzerOpenTime = null;
+    room.buzzerCloseTime = null;
     room.buzzes = [];
     room.answers = [];
     room.roundNumber += 1;
+
+    // Clear display content that references the now-deleted round data
+    room.displayState.submission = null;
+    room.displayState.latestCorrect = null;
+    if (['submission', 'correct'].includes(room.displayState.mode)) {
+      room.displayState.mode = 'join';
+    }
 
     // Reset every participant's status back to waiting
     Object.values(room.participants).forEach((p) => {
@@ -370,6 +467,7 @@ io.on('connection', (socket) => {
 
     io.to(roomCode).emit('round:reset', { roundNumber: room.roundNumber });
     broadcastState(roomCode);
+    broadcastDisplayState(roomCode);
     console.log(`[round]    reset in ${roomCode} — now round ${room.roundNumber}`);
   });
 
@@ -390,6 +488,7 @@ io.on('connection', (socket) => {
     room.hostSocketId = socket.id;
     socket.join(roomCode);
     socket.emit('room:state', getRoomState(room));
+    socket.emit('display:state', buildDisplayPayload(room));
     // Re-deliver any answer images the host may have missed while disconnected
     room.answers.forEach(({ participantId, name, position, imageData }) => {
       socket.emit('answer:submitted', { participantId, name, position, imageData });
@@ -401,6 +500,15 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`[disconnect] ${socket.id}`);
+
+    // Was this socket a display observer? Just remove it from the list.
+    if (socket.data?.isDisplay) {
+      const rc = socket.data.roomCode;
+      if (rc && rooms[rc]) {
+        rooms[rc].displaySocketIds = rooms[rc].displaySocketIds.filter((id) => id !== socket.id);
+      }
+      return;
+    }
 
     // Was this socket a host?
     for (const [roomCode, room] of Object.entries(rooms)) {

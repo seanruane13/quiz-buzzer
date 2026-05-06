@@ -16,6 +16,7 @@ export default function HostRoom() {
   const [copied, setCopied] = useState(false);
   const [notification, setNotification] = useState('');
   const [answerImages, setAnswerImages] = useState({}); // { [participantId]: imageDataUrl }
+  const [displayState, setDisplayState] = useState({ mode: 'join', latestCorrect: null, submission: null });
   const notifTimer = useRef(null);
 
   const showNotification = useCallback((msg) => {
@@ -44,6 +45,8 @@ export default function HostRoom() {
       setAnswerImages({});
     });
 
+    socket.on('display:state', setDisplayState);
+
     socket.on('participant:left', ({ name }) => {
       showNotification(`${name} left the room`);
     });
@@ -71,6 +74,7 @@ export default function HostRoom() {
       socket.off('participant:left');
       socket.off('room:error');
       socket.off('reconnect');
+      socket.off('display:state');
       // Do NOT call socket.disconnect() here.
       // React 18 StrictMode runs cleanup then remounts in development, which would
       // disconnect the socket, trigger the server's disconnect handler, and delete
@@ -118,6 +122,14 @@ export default function HostRoom() {
       setTimeout(() => setCopied(false), 2000);
     });
   };
+
+  const setDisplayMode = (mode) => socket.emit('display:set', { roomCode, mode });
+
+  const showSubmissionOnDisplay = (participantId, type) => {
+    socket.emit('display:set', { roomCode, mode: 'submission', participantId, type });
+  };
+
+  const openDisplay = () => window.open(`/display/${roomCode}`, '_blank');
 
   // ── Render helpers ──────────────────────────────────────────────────────────
 
@@ -168,6 +180,42 @@ export default function HostRoom() {
                 <a className="qr-url" href={joinUrl} target="_blank" rel="noreferrer">{joinUrl}</a>
               </div>
             </div>
+          </section>
+
+          {/* Public Display Controls */}
+          <section className="card">
+            <h2>Public Display</h2>
+            <div className="display-open-row">
+              <button className="btn btn-secondary" onClick={openDisplay}>
+                Open Display in New Tab ↗
+              </button>
+            </div>
+            <div className="display-mode-label">Show on display:</div>
+            <div className="display-mode-grid">
+              {[
+                { mode: 'join',        label: 'Join Screen' },
+                { mode: 'question',    label: 'Question' },
+                { mode: 'top3',        label: 'Top 3' },
+                { mode: 'leaderboard', label: 'Leaderboard' },
+                { mode: 'correct',     label: 'Correct Answer', disabled: !displayState.latestCorrect },
+              ].map(({ mode, label, disabled }) => (
+                <button
+                  key={mode}
+                  className={`btn btn-secondary display-mode-btn ${displayState.mode === mode ? 'display-mode-btn-active' : ''}`}
+                  onClick={() => setDisplayMode(mode)}
+                  disabled={disabled}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {displayState.latestCorrect && (
+              <div className="display-latest-correct">
+                Latest correct: <strong>{displayState.latestCorrect.name}</strong>
+                {' '}+{displayState.latestCorrect.points} pts
+                {' '}(total: {displayState.latestCorrect.totalScore})
+              </div>
+            )}
           </section>
 
           {/* Question */}
@@ -360,13 +408,24 @@ export default function HostRoom() {
                       <div className="answer-image-placeholder">Image loading…</div>
                     )}
 
-                    {answer.status === 'pending' && (
-                      <div className="buzz-actions">
-                        <button className="btn btn-success btn-small" onClick={() => markAnswer(answer.participantId, 'correct')}>✓ Correct</button>
-                        <button className="btn btn-danger btn-small" onClick={() => markAnswer(answer.participantId, 'incorrect')}>✗ Wrong</button>
-                        <button className="btn btn-ghost btn-small" onClick={() => markAnswer(answer.participantId, 'skipped')}>Skip</button>
-                      </div>
-                    )}
+                    <div className="buzz-actions">
+                      {answerImages[answer.participantId] && (
+                        <button
+                          className={`btn btn-ghost btn-small ${displayState.mode === 'submission' && displayState.submission?.participantId === answer.participantId ? 'display-mode-btn-active' : ''}`}
+                          onClick={() => showSubmissionOnDisplay(answer.participantId, roomState.mode)}
+                          title="Show this submission on the public display"
+                        >
+                          Show on Display
+                        </button>
+                      )}
+                      {answer.status === 'pending' && (
+                        <>
+                          <button className="btn btn-success btn-small" onClick={() => markAnswer(answer.participantId, 'correct')}>✓ Correct</button>
+                          <button className="btn btn-danger btn-small" onClick={() => markAnswer(answer.participantId, 'incorrect')}>✗ Wrong</button>
+                          <button className="btn btn-ghost btn-small" onClick={() => markAnswer(answer.participantId, 'skipped')}>Skip</button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>

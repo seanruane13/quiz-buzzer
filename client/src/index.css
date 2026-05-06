@@ -975,6 +975,394 @@ body {
 }
 
 /* ============================================================
+   Public Display  (/display/:roomCode)
+   ============================================================ */
+.public-display {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+/* Thin header bar — shows app name + room code at all times */
+.display-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 36px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.display-app-name {
+  font-size: 18px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #a78bfa, #818cf8);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.display-topbar-code {
+  font-family: 'Courier New', monospace;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--text);
+}
+
+/* Body flexes to fill remaining height */
+.display-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* Shared title style used across screens */
+.display-section-title {
+  font-size: 28px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.display-empty {
+  font-size: 26px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ── Join Screen ─────────────────────────────────────────── */
+.display-join {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 80px;
+  padding: 48px;
+}
+.display-join-qr {
+  flex-shrink: 0;
+  background: rgba(241,245,249,.06);
+  padding: 20px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+}
+.display-join-info {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.display-join-heading {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.display-join-code {
+  font-family: 'Courier New', monospace;
+  font-size: 80px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  color: var(--text);
+  line-height: 1;
+}
+.display-join-or {
+  font-size: 20px;
+  color: var(--muted);
+}
+.display-join-url {
+  font-size: 20px;
+  color: var(--primary);
+  word-break: break-all;
+}
+.display-join-count {
+  font-size: 24px;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+/* ── Question Screen ─────────────────────────────────────── */
+.display-question {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 64px;
+}
+.display-question-text {
+  font-size: 54px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.3;
+  max-width: 1100px;
+  color: var(--text);
+}
+.display-question-placeholder {
+  font-size: 36px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ── Top 3 Screen ────────────────────────────────────────── */
+.display-top3 {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+}
+.display-podium {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 28px;
+}
+.display-podium-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 36px 20px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-width: 200px;
+}
+/* 1st place sits taller */
+.display-podium-rank-1 {
+  padding-bottom: 40px;
+  background: rgba(124,58,237,.12);
+  border-color: var(--primary);
+  box-shadow: 0 0 40px rgba(124,58,237,.2);
+}
+.display-podium-medal {
+  font-size: 52px;
+  line-height: 1;
+}
+.display-podium-name {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+}
+.display-podium-score {
+  font-size: 52px;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1;
+}
+.display-podium-pts {
+  font-size: 15px;
+  color: var(--muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* ── Leaderboard Screen ──────────────────────────────────── */
+.display-leaderboard {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 40px 80px;
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+}
+.display-lb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.display-lb-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.display-lb-first {
+  border-color: var(--primary);
+  background: rgba(124,58,237,.08);
+}
+.display-lb-rank {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--muted);
+  min-width: 44px;
+}
+.display-lb-name {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text);
+  flex: 1;
+}
+.display-lb-score {
+  font-size: 34px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+/* ── Correct Answer Screen ───────────────────────────────── */
+.display-correct {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  animation: display-appear .4s ease;
+}
+@keyframes display-appear {
+  from { transform: scale(.93); opacity: 0; }
+  to   { transform: scale(1);   opacity: 1; }
+}
+.display-correct-label {
+  font-size: 40px;
+  font-weight: 800;
+  color: var(--success);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.display-correct-name {
+  font-size: 86px;
+  font-weight: 800;
+  color: var(--text);
+  line-height: 1;
+  text-align: center;
+}
+.display-correct-points {
+  font-size: 56px;
+  font-weight: 800;
+  color: var(--success);
+}
+.display-correct-total {
+  font-size: 28px;
+  color: var(--muted);
+}
+
+/* ── Submission Screen ───────────────────────────────────── */
+.display-submission {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  gap: 14px;
+}
+.display-submission-label {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+.display-submission-name {
+  font-size: 38px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.display-tshirt-wrap {
+  max-width: 480px;
+  width: 100%;
+}
+.display-tshirt-wrap .tshirt-preview svg {
+  max-width: 480px;
+}
+.display-blackboard-wrap {
+  max-width: 800px;
+  max-height: 68vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.display-blackboard-image {
+  max-width: 100%;
+  max-height: 68vh;
+  border-radius: 12px;
+  border: 2px solid #2a4a2a;
+  display: block;
+}
+
+/* ── Error/loading screens ───────────────────────────────── */
+.display-error {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+  padding: 40px;
+}
+.display-error h1 {
+  font-size: 52px;
+  font-weight: 800;
+  color: var(--text);
+}
+.display-error p {
+  font-size: 24px;
+  color: var(--muted);
+}
+.display-error-code {
+  font-family: 'Courier New', monospace;
+  font-size: 32px !important;
+  color: var(--border) !important;
+}
+
+/* ============================================================
+   Host display controls
+   ============================================================ */
+.display-open-row {
+  margin-bottom: 14px;
+}
+.display-mode-label {
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 8px;
+}
+.display-mode-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.display-mode-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+}
+.display-mode-btn-active {
+  background: var(--primary) !important;
+  color: #fff !important;
+  border-color: var(--primary) !important;
+}
+.display-latest-correct {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 7px 11px;
+  background: var(--surface2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.display-latest-correct strong {
+  color: var(--text);
+}
+
+/* ============================================================
    Responsive
    ============================================================ */
 @media (max-width: 760px) {
