@@ -1,9 +1,11 @@
 const express = require('express');
 const http = require('http');
+const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto'); // crypto is not a global in Node.js <19
 const { Server } = require('socket.io');
 const cors = require('cors');
+const multer = require('multer');
 
 const app = express();
 const server = http.createServer(app);
@@ -12,6 +14,25 @@ const server = http.createServer(app);
 // This is safe for a local quiz app — tighten to specific origins before any public deployment.
 app.use(cors({ origin: true }));
 app.use(express.json());
+
+// ── File upload setup (PDF slideshows) ────────────────────────────────────────
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+
+app.use('/uploads', express.static(uploadsDir));
+
+const pdfStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename:    (req, file, cb) => cb(null, `${randomUUID()}.pdf`),
+});
+const pdfUpload = multer({
+  storage: pdfStorage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') return cb(null, true);
+    cb(new Error('Only PDF files are allowed'));
+  },
+});
 
 const io = new Server(server, {
   cors: {
@@ -42,6 +63,7 @@ function generateRoomCode() {
 // Returns the sanitised state object sent to all clients.
 // participants is ordered by join time; buzzes/answers ordered by server arrival time.
 // imageData is never included — images are sent directly to the host socket only.
+// fileId is internal and never exposed.
 function getRoomState(room) {
   return {
     roomCode: room.roomCode,
@@ -55,7 +77,16 @@ function getRoomState(room) {
     buzzes: room.buzzes,
     answers: room.answers.map(({ participantId, name, timestamp, status, position }) => ({
       participantId, name, timestamp, status, position
-    }))
+    })),
+    slideshow: room.slideshow
+      ? {
+          fileUrl:      room.slideshow.fileUrl,
+          fileName:     room.slideshow.fileName,
+          currentSlide: room.slideshow.currentSlide,
+          totalSlides:  room.slideshow.totalSlides,
+          uploadedAt:   room.slideshow.uploadedAt,
+        }
+      : null,
   };
 }
 
@@ -97,6 +128,15 @@ function broadcastDisplayState(roomCode) {
   io.sockets.sockets.get(room.hostSocketId)?.emit('display:state', payload);
 }
 
+// Emit a temporary correct-answer celebration only to display observers (not the host).
+// The display handles the timer locally; the server has no interrupt state.
+function emitDisplayInterrupt(roomCode, data) {
+  const room = rooms[roomCode];
+  if (!room) return;
+  room.displaySocketIds = room.displaySocketIds.filter((id) => io.sockets.sockets.has(id));
+  room.displaySocketIds.forEach((id) => io.sockets.sockets.get(id)?.emit('display:interrupt', data));
+}
+
 // ── Socket event handlers ─────────────────────────────────────────────────────
 
 io.on('connection', (socket) => {
@@ -118,11 +158,12 @@ io.on('connection', (socket) => {
       buzzes: [],
       answers: [],
       displayState: {
-        mode: 'join', // 'join' | 'question' | 'top3' | 'leaderboard' | 'correct' | 'submission'
+        mode: 'join', // 'join'|'question'|'top3'|'leaderboard'|'correct'|'submission'|'slideshow'
         latestCorrect: null, // { name, points, totalScore }
         submission: null,    // { participantId, name, type: 'blackboard'|'tshirt' }
       },
       displaySocketIds: [], // sockets connected as display observers
+      slideshow: null,      // { fileUrl, fileName, fileId, currentSlide, totalSlides, uploadedAt }
     };
 
     socket.join(roomCode);
@@ -166,7 +207,7 @@ io.on('connection', (socket) => {
   socket.on('display:set', ({ roomCode, mode, participantId, type }) => {
     const room = rooms[roomCode];
     if (!room || room.hostSocketId !== socket.id) return;
-    const validModes = ['join', 'question', 'top3', 'leaderboard', 'correct', 'submission'];
+    const validModes = ['join', 'question', 'top3', 'leaderboard', 'correct', 'submission', 'slideshow'];
     if (!validModes.includes(mode)) return;
 
     room.displayState.mode = mode;
@@ -362,6 +403,12 @@ io.on('connection', (socket) => {
       participant.score += pts;
       room.displayState.latestCorrect = { name: participant.name, points: pts, totalScore: participant.score };
       broadcastDisplayState(roomCode);
+      emitDisplayInterrupt(roomCode, {
+        participantName: participant.name,
+        pointsAwarded: pts,
+        newTotal: participant.score,
+        durationMs: 5000,
+      });
     }
 
     broadcastState(roomCode);
@@ -419,6 +466,12 @@ io.on('connection', (socket) => {
       participant.score += pts;
       room.displayState.latestCorrect = { name: participant.name, points: pts, totalScore: participant.score };
       broadcastDisplayState(roomCode);
+      emitDisplayInterrupt(roomCode, {
+        participantName: participant.name,
+        pointsAwarded: pts,
+        newTotal: participant.score,
+        durationMs: 5000,
+      });
     }
 
     broadcastState(roomCode);
@@ -471,6 +524,42 @@ io.on('connection', (socket) => {
     console.log(`[round]    reset in ${roomCode} — now round ${room.roundNumber}`);
   });
 
+  // ── HOST: slideshow navigation ───────────────────────────────────────────
+
+  socket.on('slideshow:navigate', ({ roomCode, direction }) => {
+    const room = rooms[roomCode];
+    if (!room || room.hostSocketId !== socket.id || !room.slideshow?.fileUrl) return;
+    const { currentSlide, totalSlides } = room.slideshow;
+    if (direction === 'next' && currentSlide < totalSlides) room.slideshow.currentSlide++;
+    else if (direction === 'prev' && currentSlide > 1) room.slideshow.currentSlide--;
+    else return; // no change
+    broadcastState(roomCode);
+  });
+
+  socket.on('slideshow:goto', ({ roomCode, slide }) => {
+    const room = rooms[roomCode];
+    if (!room || room.hostSocketId !== socket.id || !room.slideshow?.fileUrl) return;
+    const n = parseInt(slide, 10);
+    if (isNaN(n) || n < 1 || n > room.slideshow.totalSlides) return;
+    room.slideshow.currentSlide = n;
+    broadcastState(roomCode);
+  });
+
+  socket.on('slideshow:remove', ({ roomCode }) => {
+    const room = rooms[roomCode];
+    if (!room || room.hostSocketId !== socket.id) return;
+    if (room.slideshow?.fileId) {
+      fs.unlink(path.join(uploadsDir, room.slideshow.fileId), () => {});
+    }
+    room.slideshow = null;
+    if (room.displayState.mode === 'slideshow') {
+      room.displayState.mode = 'join';
+      broadcastDisplayState(roomCode);
+    }
+    broadcastState(roomCode);
+    console.log(`[slide]    slideshow removed from ${roomCode}`);
+  });
+
   // ── Host rejoin (after a brief disconnect / Railway proxy timeout) ──────────
   // When the host's socket drops and reconnects, it gets a new socket ID.
   // HostRoom detects the reconnect and emits this event to reclaim ownership.
@@ -516,6 +605,10 @@ io.on('connection', (socket) => {
         // Grace period: wait 15 s before destroying the room in case the host
         // reconnects (common on Railway due to proxy-level connection resets).
         room.closeTimer = setTimeout(() => {
+          // Clean up any uploaded slideshow file
+          if (room.slideshow?.fileId) {
+            fs.unlink(path.join(uploadsDir, room.slideshow.fileId), () => {});
+          }
           io.to(roomCode).emit('host:disconnected', {
             message: 'The host has disconnected. The room has been closed.'
           });
@@ -555,6 +648,57 @@ io.on('connection', (socket) => {
       }
     }
   });
+});
+
+// ── PDF slideshow upload ──────────────────────────────────────────────────────
+// Accepts a multipart PDF upload, replaces any existing slideshow for the room.
+// totalSlides is sent by the client (counted with pdfjs) so the server doesn't
+// need a PDF parsing dependency.
+app.post('/api/rooms/:roomCode/slideshow', pdfUpload.single('pdf'), (req, res) => {
+  const { roomCode } = req.params;
+  const room = rooms[roomCode];
+
+  if (!room) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ error: 'Room not found.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file received.' });
+  }
+
+  const totalSlides = Math.max(1, parseInt(req.body.totalSlides, 10) || 1);
+
+  // Delete the previous slideshow file if one exists
+  if (room.slideshow?.fileId) {
+    fs.unlink(path.join(uploadsDir, room.slideshow.fileId), () => {});
+  }
+
+  // Build a URL the display client can reach.
+  // X-Forwarded-Proto/Host are set by Railway and similar reverse proxies.
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol).split(',')[0].trim();
+  const host  = req.headers['x-forwarded-host'] || req.get('host');
+  const fileUrl = `${proto}://${host}/uploads/${req.file.filename}`;
+
+  room.slideshow = {
+    fileUrl,
+    fileName:     req.file.originalname,
+    fileId:       req.file.filename,
+    currentSlide: 1,
+    totalSlides,
+    uploadedAt:   Date.now(),
+  };
+
+  broadcastState(roomCode);
+  console.log(`[slide]    uploaded ${req.file.originalname} (${totalSlides} pages) to ${roomCode}`);
+  res.json({ success: true });
+});
+
+// Multer error handler for the upload route
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError || err?.message === 'Only PDF files are allowed') {
+    return res.status(400).json({ error: err.message });
+  }
+  next(err);
 });
 
 // ── Debug endpoint ────────────────────────────────────────────────────────────

@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import * as pdfjsLib from 'pdfjs-dist';
 import { QRCodeSVG } from 'qrcode.react';
 import TShirtPreview from '../components/TShirtPreview';
 import socket from '../socket';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 export default function HostRoom() {
   const { roomCode } = useParams();
@@ -17,6 +21,10 @@ export default function HostRoom() {
   const [notification, setNotification] = useState('');
   const [answerImages, setAnswerImages] = useState({}); // { [participantId]: imageDataUrl }
   const [displayState, setDisplayState] = useState({ mode: 'join', latestCorrect: null, submission: null });
+  const [slideUploading, setSlideUploading] = useState(false);
+  const [slideError, setSlideError] = useState('');
+  const slideFileInputRef = useRef(null);
+  const slideGotoRef = useRef(null);
   const notifTimer = useRef(null);
 
   const showNotification = useCallback((msg) => {
@@ -131,6 +139,64 @@ export default function HostRoom() {
 
   const openDisplay = () => window.open(`/display/${roomCode}`, '_blank');
 
+  const slideshowNavigate = (direction) =>
+    socket.emit('slideshow:navigate', { roomCode, direction });
+
+  const slideshowGoTo = (n) => {
+    const slide = parseInt(n, 10);
+    if (!isNaN(slide)) socket.emit('slideshow:goto', { roomCode, slide });
+  };
+
+  const slideshowRemove = () => {
+    if (window.confirm('Remove the current slideshow?')) {
+      socket.emit('slideshow:remove', { roomCode });
+    }
+  };
+
+  const handleSlideshowUpload = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = ''; // reset so the same file can be re-selected
+    if (!file) return;
+
+    if (file.type !== 'application/pdf') {
+      setSlideError('Please select a PDF file.');
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setSlideError('PDF must be under 50 MB.');
+      return;
+    }
+
+    setSlideError('');
+    setSlideUploading(true);
+
+    try {
+      // Count pages client-side so the server knows totalSlides without a PDF library
+      const buf = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+      const totalSlides = pdf.numPages;
+
+      const formData = new FormData();
+      formData.append('pdf', file);
+      formData.append('totalSlides', String(totalSlides));
+
+      // Use relative URL — Vite proxy forwards /api/* to localhost:3001 in dev
+      const res = await fetch(`/api/rooms/${roomCode}/slideshow`, {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Upload failed (${res.status})`);
+      }
+      // Server broadcasts room:state with updated slideshow — no manual state update needed
+    } catch (err) {
+      setSlideError(err.message || 'Upload failed.');
+    } finally {
+      setSlideUploading(false);
+    }
+  };
+
   // ── Render helpers ──────────────────────────────────────────────────────────
 
   if (!roomState) {
@@ -198,6 +264,7 @@ export default function HostRoom() {
                 { mode: 'top3',        label: 'Top 3' },
                 { mode: 'leaderboard', label: 'Leaderboard' },
                 { mode: 'correct',     label: 'Correct Answer', disabled: !displayState.latestCorrect },
+                { mode: 'slideshow',   label: 'Slideshow',      disabled: !roomState.slideshow?.fileUrl },
               ].map(({ mode, label, disabled }) => (
                 <button
                   key={mode}
@@ -214,6 +281,114 @@ export default function HostRoom() {
                 Latest correct: <strong>{displayState.latestCorrect.name}</strong>
                 {' '}+{displayState.latestCorrect.points} pts
                 {' '}(total: {displayState.latestCorrect.totalScore})
+              </div>
+            )}
+          </section>
+
+          {/* Slideshow Controls */}
+          <section className="card">
+            <h2>Slideshow</h2>
+
+            {/* Hidden file input */}
+            <input
+              type="file"
+              accept="application/pdf"
+              ref={slideFileInputRef}
+              style={{ display: 'none' }}
+              onChange={handleSlideshowUpload}
+            />
+
+            {!roomState.slideshow?.fileUrl ? (
+              /* ── No slideshow uploaded ── */
+              <div>
+                <p className="slide-upload-hint">
+                  Upload a PDF to show slides on the Public Display.
+                </p>
+                <button
+                  className="btn btn-primary btn-small"
+                  onClick={() => slideFileInputRef.current?.click()}
+                  disabled={slideUploading}
+                >
+                  {slideUploading ? 'Uploading…' : '⬆ Upload PDF'}
+                </button>
+                {slideError && <div className="error-message slide-error">{slideError}</div>}
+              </div>
+            ) : (
+              /* ── Slideshow loaded ── */
+              <div>
+                <div className="slide-file-info">
+                  <span className="slide-file-name" title={roomState.slideshow.fileName}>
+                    📄 {roomState.slideshow.fileName}
+                  </span>
+                  <span className="slide-file-pages">
+                    {roomState.slideshow.totalSlides} slides
+                  </span>
+                </div>
+
+                {/* Prev / counter / Next */}
+                <div className="slide-nav">
+                  <button
+                    className="btn btn-secondary btn-small"
+                    onClick={() => slideshowNavigate('prev')}
+                    disabled={roomState.slideshow.currentSlide <= 1}
+                  >
+                    ← Prev
+                  </button>
+                  <span className="slide-counter">
+                    {roomState.slideshow.currentSlide} / {roomState.slideshow.totalSlides}
+                  </span>
+                  <button
+                    className="btn btn-secondary btn-small"
+                    onClick={() => slideshowNavigate('next')}
+                    disabled={roomState.slideshow.currentSlide >= roomState.slideshow.totalSlides}
+                  >
+                    Next →
+                  </button>
+                </div>
+
+                {/* Go to slide */}
+                <div className="slide-goto">
+                  <span className="slide-goto-label">Go to:</span>
+                  <input
+                    type="number"
+                    className="points-input"
+                    min={1}
+                    max={roomState.slideshow.totalSlides}
+                    defaultValue={1}
+                    ref={slideGotoRef}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') slideshowGoTo(slideGotoRef.current?.value);
+                    }}
+                  />
+                  <button
+                    className="btn btn-ghost btn-small"
+                    onClick={() => slideshowGoTo(slideGotoRef.current?.value)}
+                  >
+                    Go
+                  </button>
+                </div>
+
+                {/* Show / Replace / Remove */}
+                <div className="card-actions" style={{ marginTop: 12, flexWrap: 'wrap' }}>
+                  <button
+                    className={`btn btn-primary btn-small ${displayState.mode === 'slideshow' ? 'display-mode-btn-active' : ''}`}
+                    onClick={() => setDisplayMode('slideshow')}
+                  >
+                    Show on Display
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-small"
+                    onClick={() => slideFileInputRef.current?.click()}
+                    disabled={slideUploading}
+                  >
+                    {slideUploading ? 'Uploading…' : '⬆ Replace'}
+                  </button>
+                  <button className="btn btn-danger btn-small" onClick={slideshowRemove}>
+                    Remove
+                  </button>
+                </div>
+
+                {slideError && <div className="error-message slide-error">{slideError}</div>}
               </div>
             )}
           </section>
